@@ -70,6 +70,30 @@ canvas { display: block; cursor: crosshair; }
   width: 0%; height: 100%; background: linear-gradient(90deg, #f87171, #dc2626);
   border-radius: 6px; transition: width 0.3s;
 }
+#level-banner {
+  position: absolute; top: 40%; left: 50%; transform: translate(-50%, -50%) scale(0);
+  color: #f0c040; font-size: 48px; font-weight: bold; pointer-events: none;
+  text-shadow: 0 0 30px rgba(240,192,64,0.8), 0 0 60px rgba(240,192,64,0.4);
+  opacity: 0; transition: none; z-index: 5; white-space: nowrap;
+}
+#level-banner.show {
+  animation: levelPop 1.5s ease-out forwards;
+}
+@keyframes levelPop {
+  0% { transform: translate(-50%, -50%) scale(0); opacity: 0; }
+  15% { transform: translate(-50%, -50%) scale(1.3); opacity: 1; }
+  30% { transform: translate(-50%, -50%) scale(1); opacity: 1; }
+  70% { transform: translate(-50%, -50%) scale(1); opacity: 1; }
+  100% { transform: translate(-50%, -50%) scale(0.8); opacity: 0; }
+}
+#kill-progress-bg {
+  width: 100%; height: 6px; background: rgba(255,255,255,0.1); border-radius: 3px;
+  margin-top: 6px; overflow: hidden;
+}
+#kill-progress-fill {
+  width: 0%; height: 100%; background: linear-gradient(90deg, #f0c040, #fbbf24);
+  border-radius: 3px; transition: width 0.3s;
+}
 </style>
 </head>
 <body>
@@ -79,11 +103,14 @@ canvas { display: block; cursor: crosshair; }
   <div id="score-panel">
     <div class="label">Score</div>
     <div class="value positive" id="score-val">0</div>
+    <div class="label" style="margin-top:6px">Level</div>
+    <div class="value" id="level-val" style="font-size:20px; color:#f0c040;">1</div>
     <div class="label" style="margin-top:6px">Killed</div>
     <div class="value" id="kill-val" style="font-size:16px">
       <span style="color:#f87171">0</span> red &nbsp;
       <span style="color:#60a5fa">0</span> blue
     </div>
+    <div id="kill-progress-bg"><div id="kill-progress-fill"></div></div>
   </div>
   <div id="instructions" style="pointer-events:all; cursor:pointer;">
     <strong>Click &amp; drag</strong> across the pencil to snap it<br>
@@ -99,6 +126,8 @@ canvas { display: block; cursor: crosshair; }
   <div id="mob-bar-label">Mob Anger</div>
   <div id="mob-bar-bg"><div id="mob-bar-fill"></div></div>
 </div>
+
+<div id="level-banner">LEVEL 2</div>
 
 <div id="overlay">
   <h1>Pencil Break</h1>
@@ -125,6 +154,8 @@ const state = {
   redKills: 0,
   blueKills: 0,
   mobAnger: 0,       // 0-100, game over at 100
+  level: 1,
+  killsThisLevel: 0,
   pencil: null,
   people: [],
   halves: [],
@@ -134,9 +165,20 @@ const state = {
   shakeIntensity: 0,
 };
 
+// Level config
+function killsToAdvance(level) {
+  return 3 + level * 2; // 5, 7, 9, 11, ...
+}
+function pencilScale(level) {
+  return Math.max(0.35, 1 - (level - 1) * 0.1); // shrinks 10% per level, min 35%
+}
+
 // ===== UI REFS =====
 const scoreVal = document.getElementById('score-val');
 const killVal = document.getElementById('kill-val');
+const levelVal = document.getElementById('level-val');
+const killProgressFill = document.getElementById('kill-progress-fill');
+const levelBanner = document.getElementById('level-banner');
 const mobBarFill = document.getElementById('mob-bar-fill');
 const overlay = document.getElementById('overlay');
 const startBtn = document.getElementById('start-btn');
@@ -158,6 +200,9 @@ function updateUI() {
   scoreVal.className = 'value ' + (state.score >= 0 ? 'positive' : 'negative');
   killVal.innerHTML = `<span style="color:#f87171">${state.redKills}</span> red &nbsp; <span style="color:#60a5fa">${state.blueKills}</span> blue`;
   mobBarFill.style.width = Math.min(100, state.mobAnger) + '%';
+  levelVal.textContent = state.level;
+  const needed = killsToAdvance(state.level);
+  killProgressFill.style.width = Math.min(100, (state.killsThisLevel / needed) * 100) + '%';
 }
 
 // ===== PENCIL =====
@@ -165,12 +210,13 @@ const PENCIL_LEN = 180;
 const PENCIL_THICK = 14;
 
 function createPencil() {
+  const s = pencilScale(state.level);
   return {
     x: W / 2,
     y: H / 2 + 60,
     angle: -Math.PI / 6 + Math.random() * Math.PI / 3,
-    len: PENCIL_LEN,
-    thick: PENCIL_THICK,
+    len: PENCIL_LEN * s,
+    thick: PENCIL_THICK * s,
     breakProgress: 0,  // 0 = intact, 1 = fully snapped
     broken: false,
     wobble: 0,
@@ -468,6 +514,33 @@ function spawnFloatingText(x, y, text, color) {
   state.floatingTexts.push({ x, y, text, color, life: 1, vy: -2 });
 }
 
+// ===== LEVEL UP BANNER =====
+function showLevelBanner(level) {
+  levelBanner.textContent = `LEVEL ${level}`;
+  levelBanner.classList.remove('show');
+  // Force reflow to restart animation
+  void levelBanner.offsetWidth;
+  levelBanner.classList.add('show');
+  // Bonus: reduce mob anger on level up
+  state.mobAnger = Math.max(0, state.mobAnger - 15);
+  state.shakeTimer = 0.3;
+  state.shakeIntensity = 8;
+  // Spawn burst of gold particles at center
+  for (let i = 0; i < 30; i++) {
+    const angle = Math.random() * Math.PI * 2;
+    const speed = 2 + Math.random() * 5;
+    state.particles.push({
+      x: W / 2, y: H / 2,
+      vx: Math.cos(angle) * speed,
+      vy: Math.sin(angle) * speed,
+      life: 1,
+      decay: 0.01 + Math.random() * 0.015,
+      size: 2 + Math.random() * 5,
+      color: ['#f0c040', '#fbbf24', '#fde68a'][Math.floor(Math.random() * 3)],
+    });
+  }
+}
+
 // ===== INPUT =====
 let dragStart = null;
 let isDragging = false;
@@ -609,9 +682,22 @@ function update(dt) {
         if (p.color === 'red') {
           state.score += 100;
           state.redKills++;
+          state.killsThisLevel++;
           spawnFloatingText(p.x, p.y - 20, '+100', '#4ade80');
           // Red kill decreases mob anger slightly
           state.mobAnger = Math.max(0, state.mobAnger - 2);
+          // Check level up
+          if (state.killsThisLevel >= killsToAdvance(state.level)) {
+            state.killsThisLevel = 0;
+            state.level++;
+            showLevelBanner(state.level);
+            // Shrink the current pencil if not broken
+            if (state.pencil && !state.pencil.broken) {
+              const s = pencilScale(state.level);
+              state.pencil.len = PENCIL_LEN * s;
+              state.pencil.thick = PENCIL_THICK * s;
+            }
+          }
         } else {
           state.score -= 150;
           state.blueKills++;
@@ -804,7 +890,7 @@ function draw() {
     ctx.lineWidth = 2;
     ctx.setLineDash([5, 5]);
     ctx.beginPath();
-    ctx.arc(state.pencil.x, state.pencil.y, 50, 0, Math.PI * 2);
+    ctx.arc(state.pencil.x, state.pencil.y, 20 + state.pencil.len * 0.2, 0, Math.PI * 2);
     ctx.stroke();
     ctx.setLineDash([]);
   }
@@ -832,6 +918,9 @@ function startGame() {
   state.redKills = 0;
   state.blueKills = 0;
   state.mobAnger = 0;
+  state.level = 1;
+  state.killsThisLevel = 0;
+  levelBanner.classList.remove('show');
   state.halves = [];
   state.particles = [];
   state.floatingTexts = [];
@@ -853,9 +942,10 @@ function gameOver(reason) {
     <h1>${title}</h1>
     <div class="final-score">Final Score: ${state.score}</div>
     <div class="stats">
+      Level reached: <span style="color:#f0c040">${state.level}</span><br>
       <span class="red">Red shirts killed: ${state.redKills}</span><br>
       <span class="blue">Blue shirts killed: ${state.blueKills}</span><br>
-      Pencils broken: ${state.redKills + state.blueKills + Math.floor(state.halves.length / 2)}
+      Pencil size: ${Math.round(pencilScale(state.level) * 100)}%
     </div>
     <button id="restart-btn">Play Again</button>
   `;
