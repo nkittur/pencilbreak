@@ -31,7 +31,9 @@ canvas { display: block; cursor: crosshair; }
   background: rgba(0,0,0,0.6); border-radius: 12px; padding: 12px 20px;
   color: #ccc; font-size: 13px; line-height: 1.5; backdrop-filter: blur(8px);
   text-align: right; border: 1px solid rgba(255,255,255,0.1);
+  transition: opacity 0.4s ease, transform 0.4s ease;
 }
+#instructions.dismissed { opacity: 0; transform: translateY(-20px); pointer-events: none; }
 #instructions strong { color: #fff; }
 #overlay {
   position: absolute; top: 0; left: 0; width: 100%; height: 100%;
@@ -83,12 +85,13 @@ canvas { display: block; cursor: crosshair; }
       <span style="color:#60a5fa">0</span> blue
     </div>
   </div>
-  <div id="instructions">
+  <div id="instructions" style="pointer-events:all; cursor:pointer;">
     <strong>Click &amp; drag</strong> across the pencil to snap it<br>
     Halves fly based on your swipe angle<br>
     <span style="color:#f87171">Kill red shirts</span> = +100 pts<br>
     <span style="color:#60a5fa">Kill blue shirts</span> = -150 pts<br>
-    Don't let the mob reach you!
+    Red shirts close in &mdash; don't let them reach you!<br>
+    <span style="color:#666; font-size:11px">(tap to dismiss)</span>
   </div>
 </div>
 
@@ -137,6 +140,18 @@ const killVal = document.getElementById('kill-val');
 const mobBarFill = document.getElementById('mob-bar-fill');
 const overlay = document.getElementById('overlay');
 const startBtn = document.getElementById('start-btn');
+
+const instructionsEl = document.getElementById('instructions');
+instructionsEl.addEventListener('click', () => instructionsEl.classList.add('dismissed'));
+instructionsEl.addEventListener('touchstart', () => instructionsEl.classList.add('dismissed'));
+// Also dismiss on first game interaction (mousedown/touchstart on canvas)
+function dismissInstructions() {
+  instructionsEl.classList.add('dismissed');
+}
+canvas.addEventListener('mousedown', dismissInstructions, { once: true });
+canvas.addEventListener('touchstart', dismissInstructions, { once: true });
+
+const PLAYER_TOUCH_RADIUS = 45; // how close a red shirt can get before game over
 
 function updateUI() {
   scoreVal.textContent = state.score;
@@ -536,6 +551,19 @@ function breakPencil(endX, endY) {
   spawnBreakParticles(p.x, p.y);
   createHalves(p, swipeAngle, swipeSpeed);
 
+  // Red shirts advance toward the player on every pencil break
+  const stepSize = 25;
+  for (const person of state.people) {
+    if (!person.alive || person.color !== 'red') continue;
+    const dx = p.x - person.x;
+    const dy = p.y - person.y;
+    const dist = Math.sqrt(dx * dx + dy * dy);
+    if (dist > 1) {
+      person.x += (dx / dist) * stepSize;
+      person.y += (dy / dist) * stepSize;
+    }
+  }
+
   state.shakeTimer = 0.15;
   state.shakeIntensity = 6;
 
@@ -635,6 +663,20 @@ function update(dt) {
     }
   }
 
+  // Check if any red shirt reached the player
+  if (state.pencil) {
+    for (const p of state.people) {
+      if (!p.alive || p.color !== 'red') continue;
+      const dx = p.x - state.pencil.x;
+      const dy = p.y - state.pencil.y;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      if (dist < PLAYER_TOUCH_RADIUS) {
+        gameOver('RED_REACHED');
+        return;
+      }
+    }
+  }
+
   // Mob anger increases over time
   state.mobAnger += dt * 1.8;
 
@@ -690,7 +732,7 @@ function update(dt) {
 
   // Check game over
   if (state.mobAnger >= 100) {
-    gameOver();
+    gameOver('MOB_ANGER');
   }
 }
 
@@ -797,14 +839,18 @@ function startGame() {
   state.pencil = createPencil();
   spawnPeople(20);
   overlay.classList.add('hidden');
+  instructionsEl.classList.remove('dismissed');
   updateUI();
 }
 
-function gameOver() {
+function gameOver(reason) {
   state.running = false;
   overlay.classList.remove('hidden');
+  const title = reason === 'RED_REACHED'
+    ? 'A RED SHIRT GOT YOU!'
+    : 'THE MOB GOT YOU!';
   overlay.innerHTML = `
-    <h1>THE MOB GOT YOU!</h1>
+    <h1>${title}</h1>
     <div class="final-score">Final Score: ${state.score}</div>
     <div class="stats">
       <span class="red">Red shirts killed: ${state.redKills}</span><br>
