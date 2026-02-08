@@ -1,0 +1,849 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Pencil Break</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  background: #1a1a2e;
+  overflow: hidden;
+  font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+  user-select: none;
+  -webkit-user-select: none;
+}
+canvas { display: block; cursor: crosshair; }
+#ui {
+  position: absolute; top: 0; left: 0; width: 100%; pointer-events: none;
+  padding: 16px 24px; display: flex; justify-content: space-between; align-items: flex-start;
+}
+#score-panel {
+  background: rgba(0,0,0,0.6); border-radius: 12px; padding: 12px 20px;
+  color: #fff; font-size: 18px; line-height: 1.6; backdrop-filter: blur(8px);
+  border: 1px solid rgba(255,255,255,0.1);
+}
+#score-panel .label { color: #aaa; font-size: 13px; text-transform: uppercase; letter-spacing: 1px; }
+#score-panel .value { font-weight: bold; font-size: 22px; }
+#score-panel .value.positive { color: #4ade80; }
+#score-panel .value.negative { color: #f87171; }
+#instructions {
+  background: rgba(0,0,0,0.6); border-radius: 12px; padding: 12px 20px;
+  color: #ccc; font-size: 13px; line-height: 1.5; backdrop-filter: blur(8px);
+  text-align: right; border: 1px solid rgba(255,255,255,0.1);
+}
+#instructions strong { color: #fff; }
+#overlay {
+  position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+  background: rgba(0,0,0,0.75); display: flex; flex-direction: column;
+  justify-content: center; align-items: center; backdrop-filter: blur(4px);
+  z-index: 10;
+}
+#overlay.hidden { display: none; }
+#overlay h1 { color: #fff; font-size: 52px; margin-bottom: 8px; text-shadow: 0 0 20px rgba(255,200,0,0.5); }
+#overlay .subtitle { color: #f0c040; font-size: 20px; margin-bottom: 30px; }
+#overlay .final-score { color: #fff; font-size: 28px; margin-bottom: 10px; }
+#overlay .stats { color: #aaa; font-size: 16px; margin-bottom: 30px; line-height: 1.8; }
+#overlay .stats .red { color: #f87171; }
+#overlay .stats .blue { color: #60a5fa; }
+#overlay button {
+  background: linear-gradient(135deg, #f0c040, #e0a020); color: #1a1a2e;
+  border: none; padding: 14px 40px; font-size: 20px; border-radius: 8px;
+  cursor: pointer; font-weight: bold; pointer-events: all;
+  transition: transform 0.15s, box-shadow 0.15s;
+  box-shadow: 0 4px 15px rgba(240,192,64,0.3);
+}
+#overlay button:hover { transform: scale(1.05); box-shadow: 0 6px 25px rgba(240,192,64,0.5); }
+#mob-bar-container {
+  position: absolute; bottom: 20px; left: 50%; transform: translateX(-50%);
+  pointer-events: none;
+}
+#mob-bar-label { color: #f87171; font-size: 13px; text-align: center; margin-bottom: 4px;
+  text-transform: uppercase; letter-spacing: 2px; }
+#mob-bar-bg {
+  width: 300px; height: 12px; background: rgba(0,0,0,0.5); border-radius: 6px;
+  overflow: hidden; border: 1px solid rgba(255,255,255,0.1);
+}
+#mob-bar-fill {
+  width: 0%; height: 100%; background: linear-gradient(90deg, #f87171, #dc2626);
+  border-radius: 6px; transition: width 0.3s;
+}
+</style>
+</head>
+<body>
+<canvas id="game"></canvas>
+
+<div id="ui">
+  <div id="score-panel">
+    <div class="label">Score</div>
+    <div class="value positive" id="score-val">0</div>
+    <div class="label" style="margin-top:6px">Killed</div>
+    <div class="value" id="kill-val" style="font-size:16px">
+      <span style="color:#f87171">0</span> red &nbsp;
+      <span style="color:#60a5fa">0</span> blue
+    </div>
+  </div>
+  <div id="instructions">
+    <strong>Click &amp; drag</strong> across the pencil to snap it<br>
+    Halves fly based on your swipe angle<br>
+    <span style="color:#f87171">Kill red shirts</span> = +100 pts<br>
+    <span style="color:#60a5fa">Kill blue shirts</span> = -150 pts<br>
+    Don't let the mob reach you!
+  </div>
+</div>
+
+<div id="mob-bar-container">
+  <div id="mob-bar-label">Mob Anger</div>
+  <div id="mob-bar-bg"><div id="mob-bar-fill"></div></div>
+</div>
+
+<div id="overlay">
+  <h1>Pencil Break</h1>
+  <div class="subtitle">Snap pencils. Hit targets. Avoid the blue shirts.</div>
+  <button id="start-btn">Start Game</button>
+</div>
+
+<script>
+// ===== CANVAS SETUP =====
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+let W, H;
+function resize() {
+  W = canvas.width = window.innerWidth;
+  H = canvas.height = window.innerHeight;
+}
+window.addEventListener('resize', resize);
+resize();
+
+// ===== GAME STATE =====
+const state = {
+  running: false,
+  score: 0,
+  redKills: 0,
+  blueKills: 0,
+  mobAnger: 0,       // 0-100, game over at 100
+  pencil: null,
+  people: [],
+  halves: [],
+  particles: [],
+  floatingTexts: [],
+  shakeTimer: 0,
+  shakeIntensity: 0,
+};
+
+// ===== UI REFS =====
+const scoreVal = document.getElementById('score-val');
+const killVal = document.getElementById('kill-val');
+const mobBarFill = document.getElementById('mob-bar-fill');
+const overlay = document.getElementById('overlay');
+const startBtn = document.getElementById('start-btn');
+
+function updateUI() {
+  scoreVal.textContent = state.score;
+  scoreVal.className = 'value ' + (state.score >= 0 ? 'positive' : 'negative');
+  killVal.innerHTML = `<span style="color:#f87171">${state.redKills}</span> red &nbsp; <span style="color:#60a5fa">${state.blueKills}</span> blue`;
+  mobBarFill.style.width = Math.min(100, state.mobAnger) + '%';
+}
+
+// ===== PENCIL =====
+const PENCIL_LEN = 180;
+const PENCIL_THICK = 14;
+
+function createPencil() {
+  return {
+    x: W / 2,
+    y: H / 2 + 60,
+    angle: -Math.PI / 6 + Math.random() * Math.PI / 3,
+    len: PENCIL_LEN,
+    thick: PENCIL_THICK,
+    breakProgress: 0,  // 0 = intact, 1 = fully snapped
+    broken: false,
+    wobble: 0,
+    wobbleSpeed: 0,
+  };
+}
+
+function drawPencil(p) {
+  if (p.broken) return;
+  ctx.save();
+  ctx.translate(p.x, p.y);
+  ctx.rotate(p.angle);
+
+  const halfLen = p.len / 2;
+  const t = p.thick;
+  const wobbleOff = Math.sin(p.wobble) * p.breakProgress * 6;
+
+  // Left half
+  ctx.save();
+  ctx.translate(-halfLen / 2 + wobbleOff * -0.5, wobbleOff * 0.3);
+  ctx.rotate(p.breakProgress * -0.05);
+  drawPencilHalf(ctx, -halfLen / 2, 0, halfLen, t, true);
+  ctx.restore();
+
+  // Right half
+  ctx.save();
+  ctx.translate(halfLen / 2 + wobbleOff * 0.5, wobbleOff * -0.3);
+  ctx.rotate(p.breakProgress * 0.05);
+  drawPencilHalf(ctx, -halfLen / 2, 0, halfLen, t, false);
+  ctx.restore();
+
+  ctx.restore();
+}
+
+function drawPencilHalf(ctx, x, y, len, thick, isEraser) {
+  const h = thick / 2;
+  // Wood body
+  ctx.fillStyle = '#f0c040';
+  ctx.beginPath();
+  ctx.roundRect(x, y - h, len, thick, 3);
+  ctx.fill();
+  ctx.strokeStyle = '#c8960a';
+  ctx.lineWidth = 1;
+  ctx.stroke();
+
+  // Dark stripe
+  ctx.fillStyle = '#d4a830';
+  ctx.fillRect(x, y - h + thick * 0.35, len, thick * 0.3);
+
+  if (isEraser) {
+    // Eraser end
+    ctx.fillStyle = '#e86080';
+    ctx.beginPath();
+    ctx.roundRect(x, y - h, 18, thick, [3, 0, 0, 3]);
+    ctx.fill();
+    // Metal band
+    ctx.fillStyle = '#b0b0b0';
+    ctx.fillRect(x + 16, y - h, 8, thick);
+    ctx.fillStyle = '#909090';
+    ctx.fillRect(x + 16, y - h, 8, 2);
+    ctx.fillRect(x + 16, y + h - 2, 8, 2);
+  } else {
+    // Tip
+    ctx.fillStyle = '#f0c040';
+    ctx.beginPath();
+    ctx.moveTo(x + len, y - h);
+    ctx.lineTo(x + len + 18, y);
+    ctx.lineTo(x + len, y + h);
+    ctx.closePath();
+    ctx.fill();
+    ctx.strokeStyle = '#c8960a';
+    ctx.stroke();
+    // Graphite tip
+    ctx.fillStyle = '#333';
+    ctx.beginPath();
+    ctx.moveTo(x + len + 12, y - 3);
+    ctx.lineTo(x + len + 18, y);
+    ctx.lineTo(x + len + 12, y + 3);
+    ctx.closePath();
+    ctx.fill();
+  }
+}
+
+// ===== FLYING HALVES =====
+function createHalves(pencil, swipeAngle, swipeSpeed) {
+  const halfLen = pencil.len / 2;
+  const baseSpeed = Math.min(18, Math.max(8, swipeSpeed * 0.8));
+
+  // Perpendicular to swipe for spread
+  const spread = 0.4;
+  const angle1 = swipeAngle - spread + (Math.random() - 0.5) * 0.3;
+  const angle2 = swipeAngle + spread + (Math.random() - 0.5) * 0.3;
+
+  const s1 = baseSpeed * (0.8 + Math.random() * 0.4);
+  const s2 = baseSpeed * (0.8 + Math.random() * 0.4);
+
+  state.halves.push({
+    x: pencil.x - Math.cos(pencil.angle) * halfLen * 0.3,
+    y: pencil.y - Math.sin(pencil.angle) * halfLen * 0.3,
+    vx: Math.cos(angle1) * s1,
+    vy: Math.sin(angle1) * s1,
+    angle: pencil.angle,
+    spin: (Math.random() - 0.5) * 0.3,
+    len: halfLen,
+    thick: pencil.thick,
+    isEraser: true,
+    life: 1,
+  });
+  state.halves.push({
+    x: pencil.x + Math.cos(pencil.angle) * halfLen * 0.3,
+    y: pencil.y + Math.sin(pencil.angle) * halfLen * 0.3,
+    vx: Math.cos(angle2) * s2,
+    vy: Math.sin(angle2) * s2,
+    angle: pencil.angle,
+    spin: (Math.random() - 0.5) * 0.3,
+    len: halfLen,
+    thick: pencil.thick,
+    isEraser: false,
+    life: 1,
+  });
+}
+
+function drawHalf(h) {
+  ctx.save();
+  ctx.globalAlpha = h.life;
+  ctx.translate(h.x, h.y);
+  ctx.rotate(h.angle);
+  drawPencilHalf(ctx, -h.len / 2, 0, h.len, h.thick, h.isEraser);
+  ctx.restore();
+}
+
+// ===== PEOPLE =====
+const PERSON_RADIUS = 18;
+
+function spawnPeople(count) {
+  state.people = [];
+  const margin = 80;
+  const pencilZoneX = [W / 2 - 140, W / 2 + 140];
+  const pencilZoneY = [H / 2 - 40, H / 2 + 140];
+
+  for (let i = 0; i < count; i++) {
+    let x, y, tries = 0;
+    do {
+      x = margin + Math.random() * (W - margin * 2);
+      y = margin + Math.random() * (H - margin * 2);
+      tries++;
+    } while (tries < 50 && (
+      (x > pencilZoneX[0] && x < pencilZoneX[1] && y > pencilZoneY[0] && y < pencilZoneY[1]) ||
+      tooClose(x, y, state.people, 50)
+    ));
+
+    const isRed = Math.random() < 0.65;
+    state.people.push({
+      x, y,
+      baseX: x, baseY: y,
+      color: isRed ? 'red' : 'blue',
+      alive: true,
+      hitAnim: 0,
+      idlePhase: Math.random() * Math.PI * 2,
+      fleeing: false,
+      fleeAngle: 0,
+      fleeSpeed: 0,
+    });
+  }
+}
+
+function tooClose(x, y, list, dist) {
+  for (const p of list) {
+    const dx = p.x - x, dy = p.y - y;
+    if (Math.sqrt(dx * dx + dy * dy) < dist) return true;
+  }
+  return false;
+}
+
+function drawPerson(p) {
+  if (!p.alive) return;
+  ctx.save();
+
+  const bob = Math.sin(performance.now() * 0.003 + p.idlePhase) * 2;
+  const px = p.x;
+  const py = p.y + bob;
+
+  // Shadow
+  ctx.fillStyle = 'rgba(0,0,0,0.2)';
+  ctx.beginPath();
+  ctx.ellipse(px, py + 30, 14, 5, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Legs
+  ctx.strokeStyle = p.color === 'red' ? '#6b3030' : '#303060';
+  ctx.lineWidth = 4;
+  ctx.lineCap = 'round';
+  const legSpread = 6;
+  ctx.beginPath();
+  ctx.moveTo(px - legSpread, py + 14);
+  ctx.lineTo(px - legSpread - 1, py + 28);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(px + legSpread, py + 14);
+  ctx.lineTo(px + legSpread + 1, py + 28);
+  ctx.stroke();
+
+  // Body / Shirt
+  const shirtColor = p.color === 'red' ? '#dc2626' : '#3b82f6';
+  const shirtLight = p.color === 'red' ? '#ef4444' : '#60a5fa';
+  ctx.fillStyle = shirtColor;
+  ctx.beginPath();
+  ctx.roundRect(px - 11, py - 2, 22, 18, 4);
+  ctx.fill();
+  // Shirt highlight
+  ctx.fillStyle = shirtLight;
+  ctx.beginPath();
+  ctx.roundRect(px - 8, py, 6, 10, 2);
+  ctx.fill();
+
+  // Arms
+  ctx.strokeStyle = '#e8c090';
+  ctx.lineWidth = 4;
+  ctx.beginPath();
+  ctx.moveTo(px - 11, py + 2);
+  ctx.lineTo(px - 17, py + 12);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(px + 11, py + 2);
+  ctx.lineTo(px + 17, py + 12);
+  ctx.stroke();
+
+  // Head
+  ctx.fillStyle = '#f0c8a0';
+  ctx.beginPath();
+  ctx.arc(px, py - 10, 10, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Hair
+  ctx.fillStyle = p.color === 'red' ? '#4a2020' : '#2a2a50';
+  ctx.beginPath();
+  ctx.arc(px, py - 14, 9, Math.PI, Math.PI * 2);
+  ctx.fill();
+
+  // Eyes
+  ctx.fillStyle = '#333';
+  ctx.beginPath();
+  ctx.arc(px - 3.5, py - 11, 1.5, 0, Math.PI * 2);
+  ctx.arc(px + 3.5, py - 11, 1.5, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Hit flash
+  if (p.hitAnim > 0) {
+    ctx.globalAlpha = p.hitAnim;
+    ctx.fillStyle = '#fff';
+    ctx.beginPath();
+    ctx.arc(px, py, 24, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  ctx.restore();
+}
+
+// ===== PARTICLES =====
+function spawnDeathParticles(x, y, color) {
+  const c = color === 'red' ? ['#dc2626', '#f87171', '#ff9999'] : ['#3b82f6', '#60a5fa', '#93c5fd'];
+  for (let i = 0; i < 20; i++) {
+    const angle = Math.random() * Math.PI * 2;
+    const speed = 1 + Math.random() * 5;
+    state.particles.push({
+      x, y,
+      vx: Math.cos(angle) * speed,
+      vy: Math.sin(angle) * speed,
+      life: 1,
+      decay: 0.015 + Math.random() * 0.02,
+      size: 2 + Math.random() * 4,
+      color: c[Math.floor(Math.random() * c.length)],
+    });
+  }
+}
+
+function spawnBreakParticles(x, y) {
+  for (let i = 0; i < 12; i++) {
+    const angle = Math.random() * Math.PI * 2;
+    const speed = 1 + Math.random() * 3;
+    state.particles.push({
+      x, y,
+      vx: Math.cos(angle) * speed,
+      vy: Math.sin(angle) * speed,
+      life: 1,
+      decay: 0.02 + Math.random() * 0.02,
+      size: 1 + Math.random() * 3,
+      color: ['#f0c040', '#c8960a', '#d4a830'][Math.floor(Math.random() * 3)],
+    });
+  }
+}
+
+// ===== FLOATING TEXT =====
+function spawnFloatingText(x, y, text, color) {
+  state.floatingTexts.push({ x, y, text, color, life: 1, vy: -2 });
+}
+
+// ===== INPUT =====
+let dragStart = null;
+let isDragging = false;
+
+canvas.addEventListener('mousedown', e => {
+  if (!state.running) return;
+  dragStart = { x: e.clientX, y: e.clientY, time: performance.now() };
+  isDragging = true;
+});
+
+canvas.addEventListener('mousemove', e => {
+  if (!isDragging || !state.running || !state.pencil || state.pencil.broken) return;
+  if (!dragStart) return;
+  const dx = e.clientX - dragStart.x;
+  const dy = e.clientY - dragStart.y;
+  const dist = Math.sqrt(dx * dx + dy * dy);
+  state.pencil.wobble += 0.3;
+  state.pencil.breakProgress = Math.min(1, dist / 80);
+
+  if (dist > 80) {
+    breakPencil(e.clientX, e.clientY);
+  }
+});
+
+canvas.addEventListener('mouseup', () => {
+  isDragging = false;
+  if (state.pencil && !state.pencil.broken) {
+    state.pencil.breakProgress = 0;
+    state.pencil.wobble = 0;
+  }
+  dragStart = null;
+});
+
+// Touch support
+canvas.addEventListener('touchstart', e => {
+  e.preventDefault();
+  if (!state.running) return;
+  const t = e.touches[0];
+  dragStart = { x: t.clientX, y: t.clientY, time: performance.now() };
+  isDragging = true;
+}, { passive: false });
+
+canvas.addEventListener('touchmove', e => {
+  e.preventDefault();
+  if (!isDragging || !state.running || !state.pencil || state.pencil.broken) return;
+  if (!dragStart) return;
+  const t = e.touches[0];
+  const dx = t.clientX - dragStart.x;
+  const dy = t.clientY - dragStart.y;
+  const dist = Math.sqrt(dx * dx + dy * dy);
+  state.pencil.wobble += 0.3;
+  state.pencil.breakProgress = Math.min(1, dist / 80);
+
+  if (dist > 80) {
+    breakPencil(t.clientX, t.clientY);
+  }
+}, { passive: false });
+
+canvas.addEventListener('touchend', e => {
+  e.preventDefault();
+  isDragging = false;
+  if (state.pencil && !state.pencil.broken) {
+    state.pencil.breakProgress = 0;
+    state.pencil.wobble = 0;
+  }
+  dragStart = null;
+}, { passive: false });
+
+function breakPencil(endX, endY) {
+  const p = state.pencil;
+  if (!p || p.broken) return;
+  p.broken = true;
+  isDragging = false;
+
+  const dx = endX - dragStart.x;
+  const dy = endY - dragStart.y;
+  const swipeAngle = Math.atan2(dy, dx);
+  const elapsed = (performance.now() - dragStart.time) / 1000;
+  const swipeSpeed = Math.sqrt(dx * dx + dy * dy) / Math.max(0.05, elapsed) * 0.02;
+
+  spawnBreakParticles(p.x, p.y);
+  createHalves(p, swipeAngle, swipeSpeed);
+
+  state.shakeTimer = 0.15;
+  state.shakeIntensity = 6;
+
+  dragStart = null;
+
+  // Spawn new pencil after delay
+  setTimeout(() => {
+    if (state.running) {
+      state.pencil = createPencil();
+    }
+  }, 400);
+}
+
+// ===== COLLISIONS =====
+function checkHalfPersonCollision(half, person) {
+  const dx = half.x - person.x;
+  const dy = half.y - person.y;
+  const dist = Math.sqrt(dx * dx + dy * dy);
+  return dist < PERSON_RADIUS + half.thick;
+}
+
+// ===== GAME LOOP =====
+let lastTime = 0;
+
+function update(dt) {
+  // Update halves
+  for (let i = state.halves.length - 1; i >= 0; i--) {
+    const h = state.halves[i];
+    h.x += h.vx;
+    h.y += h.vy;
+    h.vy += 0.15; // gravity
+    h.angle += h.spin;
+    h.life -= 0.008;
+
+    // Check collision with people
+    for (const p of state.people) {
+      if (!p.alive) continue;
+      if (checkHalfPersonCollision(h, p)) {
+        p.alive = false;
+        p.hitAnim = 1;
+        spawnDeathParticles(p.x, p.y, p.color);
+
+        if (p.color === 'red') {
+          state.score += 100;
+          state.redKills++;
+          spawnFloatingText(p.x, p.y - 20, '+100', '#4ade80');
+          // Red kill decreases mob anger slightly
+          state.mobAnger = Math.max(0, state.mobAnger - 2);
+        } else {
+          state.score -= 150;
+          state.blueKills++;
+          spawnFloatingText(p.x, p.y - 20, '-150', '#f87171');
+          // Blue kill increases mob anger significantly
+          state.mobAnger += 20;
+          state.shakeTimer = 0.25;
+          state.shakeIntensity = 10;
+        }
+        updateUI();
+
+        // Nearby people flee
+        for (const other of state.people) {
+          if (!other.alive || other === p) continue;
+          const fdx = other.x - p.x, fdy = other.y - p.y;
+          const fdist = Math.sqrt(fdx * fdx + fdy * fdy);
+          if (fdist < 150) {
+            other.fleeing = true;
+            other.fleeAngle = Math.atan2(fdy, fdx);
+            other.fleeSpeed = 2 + Math.random();
+          }
+        }
+
+        h.life = 0;
+        break;
+      }
+    }
+
+    // Remove dead halves
+    if (h.life <= 0 || h.x < -100 || h.x > W + 100 || h.y > H + 100) {
+      state.halves.splice(i, 1);
+    }
+  }
+
+  // Update people
+  for (const p of state.people) {
+    if (!p.alive) {
+      p.hitAnim = Math.max(0, p.hitAnim - dt * 3);
+      continue;
+    }
+    if (p.fleeing) {
+      p.x += Math.cos(p.fleeAngle) * p.fleeSpeed;
+      p.y += Math.sin(p.fleeAngle) * p.fleeSpeed;
+      p.fleeSpeed *= 0.97;
+      if (p.fleeSpeed < 0.1) p.fleeing = false;
+      // Clamp to screen
+      p.x = Math.max(20, Math.min(W - 20, p.x));
+      p.y = Math.max(20, Math.min(H - 20, p.y));
+    }
+  }
+
+  // Mob anger increases over time
+  state.mobAnger += dt * 1.8;
+
+  // Respawn people occasionally to keep it going
+  const aliveCount = state.people.filter(p => p.alive).length;
+  if (aliveCount < 8 && Math.random() < dt * 0.5) {
+    const edge = Math.floor(Math.random() * 4);
+    let nx, ny;
+    switch (edge) {
+      case 0: nx = Math.random() * W; ny = -20; break;
+      case 1: nx = W + 20; ny = Math.random() * H; break;
+      case 2: nx = Math.random() * W; ny = H + 20; break;
+      case 3: nx = -20; ny = Math.random() * H; break;
+    }
+    const isRed = Math.random() < 0.6;
+    state.people.push({
+      x: nx, y: ny, baseX: nx, baseY: ny,
+      color: isRed ? 'red' : 'blue',
+      alive: true, hitAnim: 0,
+      idlePhase: Math.random() * Math.PI * 2,
+      fleeing: false, fleeAngle: 0, fleeSpeed: 0,
+    });
+    // Walk them in
+    const cx = W / 2 + (Math.random() - 0.5) * W * 0.7;
+    const cy = H / 2 + (Math.random() - 0.5) * H * 0.5;
+    const ang = Math.atan2(cy - ny, cx - nx);
+    const person = state.people[state.people.length - 1];
+    person.fleeing = true;
+    person.fleeAngle = ang;
+    person.fleeSpeed = 1.5 + Math.random();
+  }
+
+  // Update particles
+  for (let i = state.particles.length - 1; i >= 0; i--) {
+    const p = state.particles[i];
+    p.x += p.vx;
+    p.y += p.vy;
+    p.vy += 0.05;
+    p.life -= p.decay;
+    if (p.life <= 0) state.particles.splice(i, 1);
+  }
+
+  // Update floating texts
+  for (let i = state.floatingTexts.length - 1; i >= 0; i--) {
+    const ft = state.floatingTexts[i];
+    ft.y += ft.vy;
+    ft.life -= dt * 1.5;
+    if (ft.life <= 0) state.floatingTexts.splice(i, 1);
+  }
+
+  // Screen shake
+  state.shakeTimer = Math.max(0, state.shakeTimer - dt);
+
+  // Check game over
+  if (state.mobAnger >= 100) {
+    gameOver();
+  }
+}
+
+function draw() {
+  ctx.save();
+
+  // Screen shake
+  if (state.shakeTimer > 0) {
+    const sx = (Math.random() - 0.5) * state.shakeIntensity * (state.shakeTimer * 4);
+    const sy = (Math.random() - 0.5) * state.shakeIntensity * (state.shakeTimer * 4);
+    ctx.translate(sx, sy);
+  }
+
+  // Background
+  const grad = ctx.createRadialGradient(W / 2, H / 2, 0, W / 2, H / 2, W * 0.7);
+  grad.addColorStop(0, '#2a2a4e');
+  grad.addColorStop(1, '#1a1a2e');
+  ctx.fillStyle = grad;
+  ctx.fillRect(-10, -10, W + 20, H + 20);
+
+  // Floor grid
+  ctx.strokeStyle = 'rgba(255,255,255,0.03)';
+  ctx.lineWidth = 1;
+  for (let x = 0; x < W; x += 60) {
+    ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke();
+  }
+  for (let y = 0; y < H; y += 60) {
+    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke();
+  }
+
+  // Draw people (dead ones first for layering)
+  for (const p of state.people) {
+    if (!p.alive) drawPerson(p);
+  }
+  for (const p of state.people) {
+    if (p.alive) drawPerson(p);
+  }
+
+  // Draw pencil
+  if (state.pencil) drawPencil(state.pencil);
+
+  // Draw flying halves
+  for (const h of state.halves) drawHalf(h);
+
+  // Draw particles
+  for (const p of state.particles) {
+    ctx.globalAlpha = p.life;
+    ctx.fillStyle = p.color;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+
+  // Draw floating texts
+  for (const ft of state.floatingTexts) {
+    ctx.globalAlpha = ft.life;
+    ctx.fillStyle = ft.color;
+    ctx.font = 'bold 22px "Segoe UI", sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText(ft.text, ft.x, ft.y);
+  }
+  ctx.globalAlpha = 1;
+
+  // Pencil break hint circle
+  if (state.pencil && !state.pencil.broken && !isDragging) {
+    const t = performance.now() * 0.002;
+    ctx.strokeStyle = `rgba(240, 192, 64, ${0.15 + Math.sin(t) * 0.1})`;
+    ctx.lineWidth = 2;
+    ctx.setLineDash([5, 5]);
+    ctx.beginPath();
+    ctx.arc(state.pencil.x, state.pencil.y, 50, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.setLineDash([]);
+  }
+
+  ctx.restore();
+}
+
+function gameLoop(timestamp) {
+  const dt = Math.min(0.05, (timestamp - lastTime) / 1000);
+  lastTime = timestamp;
+
+  if (state.running) {
+    update(dt);
+    draw();
+    updateUI();
+  }
+
+  requestAnimationFrame(gameLoop);
+}
+
+// ===== GAME FLOW =====
+function startGame() {
+  state.running = true;
+  state.score = 0;
+  state.redKills = 0;
+  state.blueKills = 0;
+  state.mobAnger = 0;
+  state.halves = [];
+  state.particles = [];
+  state.floatingTexts = [];
+  state.shakeTimer = 0;
+  state.pencil = createPencil();
+  spawnPeople(20);
+  overlay.classList.add('hidden');
+  updateUI();
+}
+
+function gameOver() {
+  state.running = false;
+  overlay.classList.remove('hidden');
+  overlay.innerHTML = `
+    <h1>THE MOB GOT YOU!</h1>
+    <div class="final-score">Final Score: ${state.score}</div>
+    <div class="stats">
+      <span class="red">Red shirts killed: ${state.redKills}</span><br>
+      <span class="blue">Blue shirts killed: ${state.blueKills}</span><br>
+      Pencils broken: ${state.redKills + state.blueKills + Math.floor(state.halves.length / 2)}
+    </div>
+    <button id="restart-btn">Play Again</button>
+  `;
+  document.getElementById('restart-btn').addEventListener('click', startGame);
+}
+
+// ===== INIT =====
+startBtn.addEventListener('click', startGame);
+requestAnimationFrame(gameLoop);
+
+// Polyfill roundRect
+if (!CanvasRenderingContext2D.prototype.roundRect) {
+  CanvasRenderingContext2D.prototype.roundRect = function(x, y, w, h, radii) {
+    let r;
+    if (typeof radii === 'number') {
+      r = [radii, radii, radii, radii];
+    } else if (Array.isArray(radii)) {
+      r = radii.concat([0,0,0,0]).slice(0, 4);
+    } else {
+      r = [0,0,0,0];
+    }
+    this.moveTo(x + r[0], y);
+    this.lineTo(x + w - r[1], y);
+    this.quadraticCurveTo(x + w, y, x + w, y + r[1]);
+    this.lineTo(x + w, y + h - r[2]);
+    this.quadraticCurveTo(x + w, y + h, x + w - r[2], y + h);
+    this.lineTo(x + r[3], y + h);
+    this.quadraticCurveTo(x, y + h, x, y + h - r[3]);
+    this.lineTo(x, y + r[0]);
+    this.quadraticCurveTo(x, y, x + r[0], y);
+    this.closePath();
+    return this;
+  };
+}
+</script>
+</body>
+</html>
